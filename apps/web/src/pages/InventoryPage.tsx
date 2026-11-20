@@ -1,0 +1,1477 @@
+// ============================================================
+// InventoryPage.tsx — Módulo de Inventario (3 tabs)
+//
+// Tab 1 "Productos": tabla con filtros + CRUD vía Sheet
+// Tab 2 "Entradas":  historial + registrar entrada manual
+// Tab 3 "Alertas":   productos en Amarillo/Rojo con acción rápida
+//
+// La Sheet de RegisterEntry se controla a nivel page para que
+// AlertsTab pueda dispararla con un producto pre-seleccionado.
+// ============================================================
+
+import { useEffect, useState } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
+import {
+  AlertTriangle,
+  Check,
+  ChevronsUpDown,
+  PackageOpen,
+  Pencil,
+  Plus,
+  Search,
+  Trash2,
+  Package2,
+  FileSpreadsheet,
+  FileUp,
+  Layers,
+} from "lucide-react";
+import { Link } from "@tanstack/react-router";
+
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import { CurrencyInput } from "@/components/ui/CurrencyInput";
+import { IvaSelect } from "@/components/shared/IvaSelect";
+import { IVA_CLINICA, ivaToForm, ivaToRequest } from "@/lib/iva";
+import {
+  Form,
+  FormControl,
+  FormDescription,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { FormDialog } from "@/components/shared/FormDialog";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { ResponsiveTable } from "@/components/shared/ResponsiveTable";
+import { LoteBadge } from "@/components/shared/LoteBadge";
+import { ProductLotsTable } from "@/components/inventory/ProductLotsTable";
+import { WriteOffLotDialog, type WriteOffTarget } from "@/components/inventory/WriteOffLotDialog";
+import { RegulatoryReportDialog } from "@/components/inventory/RegulatoryReportDialog";
+import { SemaforoBadge } from "@/components/shared/SemaforoBadge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { PageContainer } from "@/components/shared/PageContainer";
+import { MovementsTab } from "@/components/inventory/MovementsTab";
+import { EmptyState } from "@/components/shared/EmptyState";
+import { ImageUpload } from "@/components/shared/ImageUpload";
+import { SecureImage } from "@/components/shared/SecureImage";
+import { MotionLi, MotionTableRow, staggerProps } from "@/components/shared/motion-elements";
+import { formatShortDate } from "@/lib/format-platform";
+import { formatCOP } from "@/lib/format-cop";
+
+import {
+  useCreateProduct,
+  useDeleteProduct,
+  useInventoryEntries,
+  useProductCategories,
+  useProducts,
+  useRegisterEntry,
+  useLotAlerts,
+  useStockAlerts,
+  useUpdateProduct,
+} from "@/api/inventory.api";
+import { useDebounce } from "@/hooks/use-debounce";
+import { usePermissions } from "@/hooks/use-permissions";
+import { usePageReset } from "@/hooks/use-page-reset";
+import { useToastStore } from "@/stores/toast.store";
+import { toLocalDate, toLocalIso } from "@/lib/dates";
+import { cn } from "@/lib/utils";
+import {
+  ENTRY_REASON_LABELS,
+  EntryReason,
+  PRODUCT_TYPE_LABELS,
+  REGULATORY_LABELS,
+  type LotAlerta,
+  REGULATORY_PLURAL,
+  RegulatoryType,
+  ProductType,
+  type Product,
+  type StockStatus,
+} from "@/types/inventory";
+
+const PAGE_SIZE = 20;
+
+// ────────────────────────────────────────────────────────────
+// Página principal con tabs
+// ────────────────────────────────────────────────────────────
+export function InventoryPage() {
+  const [productSheet, setProductSheet] = useState<{
+    open: boolean;
+    editing?: Product;
+  }>({ open: false });
+  // `seq` remonta el formulario de entrada en cada apertura (estado limpio sin useEffect)
+  const [entrySheet, setEntrySheet] = useState<{
+    open: boolean;
+    defaultProduct?: Product;
+    seq: number;
+  }>({ open: false, seq: 0 });
+  const openEntry = (defaultProduct?: Product) =>
+    setEntrySheet((s) => ({ open: true, defaultProduct, seq: s.seq + 1 }));
+
+  const { can } = usePermissions();
+  const [reporteOpen, setReporteOpen] = useState(false);
+
+  return (
+    <PageContainer>
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-3xl font-bold">Inventario</h1>
+          <p className="text-muted-foreground">
+            Productos con su lote, vencimiento y registro sanitario, entradas y alertas.
+          </p>
+        </div>
+        {can("products.update") && (
+          <Button variant="outline" onClick={() => setReporteOpen(true)}>
+            <FileSpreadsheet className="mr-2 h-4 w-4" />
+            Reporte para Secretaría de Salud
+          </Button>
+        )}
+      </div>
+
+      <Tabs defaultValue="products">
+        <TabsList>
+          <TabsTrigger value="products">Productos</TabsTrigger>
+          <TabsTrigger value="entries">Entradas</TabsTrigger>
+          <TabsTrigger value="movements">Movimientos</TabsTrigger>
+          <TabsTrigger value="alerts">Alertas</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="products" className="mt-4">
+          <ProductsTab
+            onNew={() => setProductSheet({ open: true })}
+            onEdit={(p) => setProductSheet({ open: true, editing: p })}
+          />
+        </TabsContent>
+        <TabsContent value="entries" className="mt-4">
+          <EntriesTab onNew={() => openEntry()} />
+        </TabsContent>
+        <TabsContent value="movements" className="mt-4">
+          <MovementsTab />
+        </TabsContent>
+        <TabsContent value="alerts" className="mt-4">
+          <AlertsTab onRegisterEntry={(p) => openEntry(p)} />
+        </TabsContent>
+      </Tabs>
+
+      {reporteOpen && <RegulatoryReportDialog onClose={() => setReporteOpen(false)} />}
+
+      <ProductSheet
+        open={productSheet.open}
+        editing={productSheet.editing}
+        onClose={() => setProductSheet({ open: false })}
+      />
+      <RegisterEntrySheet
+        key={entrySheet.seq}
+        open={entrySheet.open}
+        defaultProduct={entrySheet.defaultProduct}
+        onClose={() => setEntrySheet((s) => ({ ...s, open: false }))}
+      />
+    </PageContainer>
+  );
+}
+
+// ────────────────────────────────────────────────────────────
+// Tab 1: Productos
+// ────────────────────────────────────────────────────────────
+function ProductsTab({
+  onNew,
+  onEdit,
+}: {
+  onNew: () => void;
+  onEdit: (p: Product) => void;
+}) {
+  const { can } = usePermissions();
+  const [searchInput, setSearchInput] = useState("");
+  const search = useDebounce(searchInput, 300);
+  const [tipo, setTipo] = useState<string>("all");
+  const [semaforo, setSemaforo] = useState<string>("all");
+  // Cómo lo clasifica el INVIMA: separa lo que hay que reportar de lo que no
+  const [regulatorio, setRegulatorio] = useState<string>("all");
+  // Categoría libre de la clínica; "sin" = productos sin categoría
+  const [categoria, setCategoria] = useState<string>("all");
+  const { data: categorias } = useProductCategories();
+  // Ficha de lotes del producto elegido
+  const [lotesDe, setLotesDe] = useState<Product | null>(null);
+  const [page, setPage] = usePageReset(`${search}|${tipo}|${semaforo}|${regulatorio}|${categoria}`);
+
+  const { data, isLoading } = useProducts(
+    page,
+    PAGE_SIZE,
+    search,
+    tipo !== "all" ? (tipo as ProductType) : undefined,
+    semaforo !== "all" ? (semaforo as "Verde" | "Amarillo" | "Rojo") : undefined,
+    regulatorio !== "all" ? (regulatorio as RegulatoryType) : undefined,
+    categoria !== "all" ? categoria : undefined,
+  );
+
+  const totalPages = data ? Math.max(1, Math.ceil(data.totalCount / PAGE_SIZE)) : 1;
+  const showEmpty = !isLoading && data && data.items.length === 0;
+
+  return (
+    <div>
+      {lotesDe && (
+        <FormDialog
+          open
+          onOpenChange={(o) => !o && setLotesDe(null)}
+          title={<>Lotes · {lotesDe.nombre}</>}
+          description={
+            <>
+              {REGULATORY_LABELS[lotesDe.tipoRegulatorio]}
+              {lotesDe.registroSanitarioInvima && ` · ${lotesDe.registroSanitarioInvima}`}
+              {lotesDe.requiereCadenaFrio && " · requiere cadena de frío"}
+              {lotesDe.ultimoCosto != null && ` · último costo ${formatCOP(lotesDe.ultimoCosto)}`}
+            </>
+          }
+          className="sm:max-w-3xl"
+          actions={<Button variant="outline" onClick={() => setLotesDe(null)}>Cerrar</Button>}
+        >
+          <ProductLotsTable productId={lotesDe.id} unidadMedida={lotesDe.unidadMedida} productoNombre={lotesDe.nombre} />
+        </FormDialog>
+      )}
+
+      {/* Tipo regulatorio: es el primer corte con el que piensa la Secretaría de Salud */}
+      <Tabs value={regulatorio} onValueChange={setRegulatorio} className="mb-4">
+        <TabsList>
+          <TabsTrigger value="all">Todos</TabsTrigger>
+          {Object.entries(REGULATORY_PLURAL).map(([valor, etiqueta]) => (
+            <TabsTrigger key={valor} value={valor}>
+              {etiqueta}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
+
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap gap-2 flex-1">
+          <div className="relative max-w-sm flex-1 min-w-[220px]">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              type="search"
+              placeholder="Buscar por nombre o referencia..."
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              className="pl-9"
+            />
+          </div>
+          <Select value={categoria} onValueChange={setCategoria}>
+            <SelectTrigger className="w-44" aria-label="Filtrar por categoría">
+              <SelectValue placeholder="Categoría" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todas las categorías</SelectItem>
+              {categorias?.map((c) => (
+                <SelectItem key={c} value={c}>{c}</SelectItem>
+              ))}
+              <SelectItem value="sin">Sin categoría</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={tipo} onValueChange={setTipo}>
+            <SelectTrigger className="w-40">
+              <SelectValue placeholder="Tipo" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todos los tipos</SelectItem>
+              {Object.entries(PRODUCT_TYPE_LABELS).map(([v, l]) => (
+                <SelectItem key={v} value={v}>{l}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={semaforo} onValueChange={setSemaforo}>
+            <SelectTrigger className="w-40">
+              <SelectValue placeholder="Semáforo" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todos los semáforos</SelectItem>
+              <SelectItem value="Verde">Verde (óptimo)</SelectItem>
+              <SelectItem value="Amarillo">Amarillo (bajo)</SelectItem>
+              <SelectItem value="Rojo">Rojo (crítico)</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {can("imports.run") && (
+            <Button variant="outline" asChild>
+              <Link to="/inventory/import">
+                <FileUp className="mr-2 h-4 w-4" />
+                Importar
+              </Link>
+            </Button>
+          )}
+          {can("products.create") && (
+            <Button onClick={onNew}>
+              <Plus className="mr-2 h-4 w-4" />
+              Nuevo producto
+            </Button>
+          )}
+        </div>
+      </div>
+
+      <ResponsiveTable>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Nombre</TableHead>
+              <TableHead>Referencia</TableHead>
+              <TableHead>Categoría</TableHead>
+              <TableHead>Tipo</TableHead>
+              <TableHead>Unidad</TableHead>
+              <TableHead>Stock actual</TableHead>
+              <TableHead>Semáforo</TableHead>
+              <TableHead className="text-right">Último costo</TableHead>
+              <TableHead className="w-[140px] text-right">Acciones</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {isLoading &&
+              Array.from({ length: 5 }).map((_, i) => (
+                <TableRow key={`skel-${i}`}>
+                  {Array.from({ length: 9 }).map((__, j) => (
+                    <TableCell key={j}><Skeleton className="h-4 w-20" /></TableCell>
+                  ))}
+                </TableRow>
+              ))}
+
+            {showEmpty && (
+              <TableRow>
+                <TableCell colSpan={9}>
+                  <EmptyState
+                    illustration="inventory"
+                    title="Sin productos con esos filtros"
+                    description="Ajusta la búsqueda o crea el primer producto del inventario."
+                  />
+                </TableCell>
+              </TableRow>
+            )}
+
+            {data?.items.map((p, i) => (
+              <MotionTableRow key={p.id} {...staggerProps(i)}>
+                <TableCell className="font-medium">
+                  <div className="flex items-center gap-3">
+                    <SecureImage
+                      id={p.imagenId}
+                      alt=""
+                      className="h-10 w-10 shrink-0 rounded-lg border"
+                      fallback={
+                        <span
+                          aria-hidden
+                          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border bg-muted text-muted-foreground"
+                        >
+                          <Package2 className="h-4 w-4" />
+                        </span>
+                      }
+                    />
+                    {p.nombre}
+                  </div>
+                </TableCell>
+                <TableCell className="text-muted-foreground">{p.referencia ?? "—"}</TableCell>
+                <TableCell>{p.categoria ?? <span className="text-muted-foreground">—</span>}</TableCell>
+                <TableCell>
+                  <Badge variant="outline">
+                    {PRODUCT_TYPE_LABELS[p.tipoProducto as ProductType] ?? p.tipoProducto}
+                  </Badge>
+                </TableCell>
+                <TableCell>{p.unidadMedida}</TableCell>
+                <TableCell>
+                  {p.stockActual} <span className="text-xs text-muted-foreground">/ mín {p.stockMinimo}</span>
+                </TableCell>
+                <TableCell>
+                  <SemaforoBadge estado={p.semaforoStock as StockStatus} />
+                </TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {p.ultimoCosto != null ? formatCOP(p.ultimoCosto) : <span className="text-muted-foreground">—</span>}
+                </TableCell>
+                <TableCell className="text-right">
+                  <div className="flex justify-end gap-1">
+                    <Button variant="outline" size="sm" onClick={() => setLotesDe(p)} aria-label={`Ver los lotes de ${p.nombre}`}>
+                      <Layers className="h-4 w-4" />
+                    </Button>
+                    {can("products.update") && (
+                      <Button variant="outline" size="sm" onClick={() => onEdit(p)} aria-label={`Editar ${p.nombre}`}>
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                    )}
+                    {can("products.delete") && <DeleteProductButton product={p} />}
+                  </div>
+                </TableCell>
+              </MotionTableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </ResponsiveTable>
+
+      {data && data.totalCount > 0 && (
+        <div className="mt-4 flex items-center justify-between text-sm text-muted-foreground">
+          <span>
+            Página {data.page} de {totalPages} · {data.totalCount} productos
+          </span>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}>
+              Anterior
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages}>
+              Siguiente
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DeleteProductButton({ product }: { product: Product }) {
+  const del = useDeleteProduct();
+  const handleConfirm = async () => {
+    try {
+      await del.mutateAsync(product.id);
+      useToastStore.success("Producto eliminado", product.nombre);
+    } catch {
+      // toast global
+    }
+  };
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button
+          variant="destructive"
+          size="sm"
+          disabled={del.isPending}
+          aria-label={`Eliminar ${product.nombre}`}
+        >
+          <Trash2 className="h-4 w-4" />
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>¿Eliminar "{product.nombre}"?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Soft delete. El historial de entradas y movimientos se mantiene,
+            pero el producto desaparece del listado.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={del.isPending}>Cancelar</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={handleConfirm}
+            disabled={del.isPending}
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+          >
+            {del.isPending ? "Eliminando..." : "Eliminar"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+// ────────────────────────────────────────────────────────────
+// Sheet: crear/editar producto
+// ────────────────────────────────────────────────────────────
+// Zod 4: schemas con z.number() plano (sin chain) para evitar bug
+// de input==unknown que rompe useForm. Validaciones por HTML attrs.
+const productSchema = z.object({
+  nombre: z.string().min(1, "Requerido"),
+  descripcion: z.string().optional().or(z.literal("")),
+  referencia: z.string().optional().or(z.literal("")),
+  categoria: z.string().max(100, "Máximo 100 caracteres"),
+  tipoProducto: z.enum(["Venta", "InsumoCabina", "Ambos"]),
+  unidadMedida: z.string().min(1, "Requerido"),
+  stockMinimo: z.number(),
+  stockMaximo: z.number().optional().nullable(),
+  activo: z.boolean(),
+  imagenId: z.string().nullable(),
+  // Venta: precio sin IVA; "clinica" = el IVA de productos configurado en la clínica
+  precioVenta: z.number(),
+  iva: z.string(),
+  // Trazabilidad sanitaria (lo que exige la Secretaría de Salud)
+  tipoRegulatorio: z.enum(["Insumo", "Medicamento", "DispositivoMedico", "Cosmetico"]),
+  registroSanitarioInvima: z.string(),
+  principioActivo: z.string(),
+  concentracion: z.string(),
+  requiereCadenaFrio: z.boolean(),
+});
+type ProductFormValues = z.infer<typeof productSchema>;
+const EMPTY: ProductFormValues = {
+  nombre: "",
+  descripcion: "",
+  referencia: "",
+  categoria: "",
+  tipoProducto: "Venta",
+  unidadMedida: "",
+  stockMinimo: 0,
+  stockMaximo: null,
+  activo: true,
+  imagenId: null,
+  precioVenta: 0,
+  iva: IVA_CLINICA,
+  tipoRegulatorio: "Insumo",
+  registroSanitarioInvima: "",
+  principioActivo: "",
+  concentracion: "",
+  requiereCadenaFrio: false,
+};
+
+function ProductSheet({
+  open,
+  editing,
+  onClose,
+}: {
+  open: boolean;
+  editing?: Product;
+  onClose: () => void;
+}) {
+  const create = useCreateProduct();
+  const update = useUpdateProduct();
+  const { data: categorias } = useProductCategories();
+  const isPending = create.isPending || update.isPending;
+  const isEdit = !!editing;
+
+  const form = useForm<ProductFormValues>({
+    resolver: zodResolver(productSchema),
+    defaultValues: EMPTY,
+  });
+
+  useEffect(() => {
+    if (open) {
+      form.reset(
+        editing
+          ? {
+              nombre: editing.nombre,
+              descripcion: editing.descripcion ?? "",
+              referencia: editing.referencia ?? "",
+              categoria: editing.categoria ?? "",
+              tipoProducto: editing.tipoProducto as ProductType,
+              unidadMedida: editing.unidadMedida,
+              stockMinimo: editing.stockMinimo,
+              stockMaximo: editing.stockMaximo ?? null,
+              activo: editing.activo,
+              imagenId: editing.imagenId ?? null,
+              precioVenta: editing.precioVenta ?? 0,
+              iva: ivaToForm(editing.ivaPorcentaje),
+              tipoRegulatorio: editing.tipoRegulatorio,
+              registroSanitarioInvima: editing.registroSanitarioInvima ?? "",
+              principioActivo: editing.principioActivo ?? "",
+              concentracion: editing.concentracion ?? "",
+              requiereCadenaFrio: editing.requiereCadenaFrio,
+            }
+          : EMPTY,
+      );
+    }
+  }, [open, editing, form]);
+
+  const onSubmit = async (values: ProductFormValues) => {
+    const body = {
+      nombre: values.nombre,
+      descripcion: values.descripcion || "",
+      referencia: values.referencia || undefined,
+      // Vacío quita la categoría; el backend unifica mayúsculas con las ya usadas
+      categoria: values.categoria.trim(),
+      tipoProducto: values.tipoProducto,
+      unidadMedida: values.unidadMedida,
+      stockMinimo: values.stockMinimo,
+      stockMaximo: values.stockMaximo ?? null,
+      imagenId: values.imagenId,
+      precioVenta: values.precioVenta,
+      ...ivaToRequest(values.iva),
+      tipoRegulatorio: values.tipoRegulatorio,
+      registroSanitarioInvima: values.registroSanitarioInvima.trim(),
+      principioActivo: values.principioActivo.trim(),
+      concentracion: values.concentracion.trim(),
+      requiereCadenaFrio: values.requiereCadenaFrio,
+    };
+    try {
+      if (isEdit && editing) {
+        await update.mutateAsync({
+          id: editing.id,
+          body: { ...body, activo: values.activo },
+        });
+        useToastStore.success("Producto actualizado");
+      } else {
+        await create.mutateAsync(body);
+        useToastStore.success("Producto creado");
+      }
+      onClose();
+    } catch {
+      // toast global
+    }
+  };
+
+  return (
+    <FormDialog
+      open={open}
+      onOpenChange={(o) => !o && onClose()}
+      title={<>{isEdit ? "Editar producto" : "Nuevo producto"}</>}
+      description={<>{isEdit
+              ? "El stock actual no se modifica desde acá. Para ajustarlo, registrá una entrada."
+              : "El stock actual arranca en 0. Para agregar inventario, registrá una entrada después de crear el producto."}</>}
+      dirty={form.formState.isDirty}
+      actions={
+        <Button form="product-form" type="submit" disabled={isPending}>
+            {isPending ? "Guardando..." : isEdit ? "Guardar cambios" : "Crear"}
+          </Button>
+      }
+    >
+        <div className="pt-1">
+          <Form {...form}>
+            <form id="product-form" onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+              <FormField
+                control={form.control}
+                name="imagenId"
+                render={({ field }) => (
+                  <ImageUpload
+                    entityType="Product"
+                    kind="Producto"
+                    entityId={editing?.id}
+                    value={field.value}
+                    onChange={field.onChange}
+                    label="Imagen del producto"
+                  />
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="nombre"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Nombre *</FormLabel>
+                    <FormControl><Input {...field} /></FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="referencia"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Referencia</FormLabel>
+                    <FormControl><Input placeholder="Código interno, SKU..." {...field} /></FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="categoria"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Categoría</FormLabel>
+                    <FormControl>
+                      <Input placeholder="Facial, corporal, capilar..." list="product-categories" autoComplete="off" {...field} />
+                    </FormControl>
+                    {/* Sugerencias: las categorías que ya usa la clínica (se puede escribir una nueva) */}
+                    <datalist id="product-categories">
+                      {categorias?.map((c) => <option key={c} value={c} />)}
+                    </datalist>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="descripcion"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Descripción</FormLabel>
+                    <FormControl>
+                      <textarea
+                        rows={2}
+                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <div className="grid grid-cols-2 gap-4">
+                <FormField
+                  control={form.control}
+                  name="tipoProducto"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Tipo *</FormLabel>
+                      <Select value={field.value} onValueChange={field.onChange}>
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          {Object.entries(PRODUCT_TYPE_LABELS).map(([v, l]) => (
+                            <SelectItem key={v} value={v}>{l}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="unidadMedida"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Unidad de medida *</FormLabel>
+                      <FormControl><Input placeholder="ml, kg, unidad..." {...field} /></FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <FormField
+                  control={form.control}
+                  name="stockMinimo"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Stock mínimo *</FormLabel>
+                      <FormControl>
+                        <Input
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          value={Number.isFinite(field.value) ? field.value : ""}
+                          onChange={(e) =>
+                            field.onChange(e.target.value === "" ? 0 : e.target.valueAsNumber)
+                          }
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="stockMaximo"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Stock máximo</FormLabel>
+                      <FormControl>
+                        <Input
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          value={field.value ?? ""}
+                          onChange={(e) =>
+                            field.onChange(
+                              e.target.value === "" ? null : e.target.valueAsNumber,
+                            )
+                          }
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+              <fieldset className="space-y-4 rounded-lg border p-3">
+                <legend className="px-1 text-sm font-medium">Venta</legend>
+                <div className="grid grid-cols-2 gap-4">
+                  <FormField
+                    control={form.control}
+                    name="precioVenta"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Precio de venta (sin IVA)</FormLabel>
+                        <FormControl>
+                          <CurrencyInput value={field.value} onChange={field.onChange} placeholder="0" />
+                        </FormControl>
+                        <FormDescription>En 0 no aparece en Ventas.</FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="iva"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>IVA</FormLabel>
+                        <IvaSelect value={field.value} onChange={field.onChange} />
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
+              </fieldset>
+              <fieldset className="space-y-4 rounded-lg border p-3">
+                <legend className="px-1 text-sm font-medium">Trazabilidad sanitaria</legend>
+                <div className="grid grid-cols-2 gap-4">
+                  <FormField
+                    control={form.control}
+                    name="tipoRegulatorio"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Tipo regulatorio</FormLabel>
+                        <Select value={field.value} onValueChange={field.onChange}>
+                          <FormControl>
+                            <SelectTrigger className="w-full">
+                              <SelectValue />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent>
+                            {Object.entries(REGULATORY_LABELS).map(([v, l]) => (
+                              <SelectItem key={v} value={v}>{l}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="registroSanitarioInvima"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Registro INVIMA</FormLabel>
+                        <FormControl><Input placeholder="INVIMA 2021M-0001234" {...field} /></FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="principioActivo"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Principio activo</FormLabel>
+                        <FormControl><Input {...field} /></FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="concentracion"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Concentración</FormLabel>
+                        <FormControl><Input placeholder="2 %, 100 UI/ml..." {...field} /></FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
+                <FormField
+                  control={form.control}
+                  name="requiereCadenaFrio"
+                  render={({ field }) => (
+                    <FormItem className="flex items-center justify-between">
+                      <Label>Requiere cadena de frío</Label>
+                      <FormControl>
+                        <Switch checked={field.value} onCheckedChange={field.onChange} />
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+              </fieldset>
+              {isEdit && (
+                <FormField
+                  control={form.control}
+                  name="activo"
+                  render={({ field }) => (
+                    <FormItem className="flex items-center justify-between rounded-md border p-3">
+                      <div>
+                        <Label>Activo</Label>
+                        <p className="text-xs text-muted-foreground">
+                          Si está inactivo no aparece en las búsquedas de inventario.
+                        </p>
+                      </div>
+                      <FormControl>
+                        <Switch checked={field.value} onCheckedChange={field.onChange} />
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+              )}
+            </form>
+          </Form>
+        </div>
+
+        </FormDialog>
+  );
+}
+
+// ────────────────────────────────────────────────────────────
+// Tab 2: Entradas
+// ────────────────────────────────────────────────────────────
+function EntriesTab({ onNew }: { onNew: () => void }) {
+  const { can } = usePermissions();
+  const canRegister = can("inventory.entries.create");
+  const [page, setPage] = useState(1);
+  const { data, isLoading } = useInventoryEntries(page, PAGE_SIZE);
+  const totalPages = data ? Math.max(1, Math.ceil(data.totalCount / PAGE_SIZE)) : 1;
+  const empty = !isLoading && data && data.items.length === 0;
+
+  return (
+    <div>
+      <div className="mb-4 flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">
+          Historial cronológico de entradas registradas (más recientes primero).
+        </p>
+        {canRegister && (
+          <Button onClick={onNew}>
+            <Plus className="mr-2 h-4 w-4" />
+            Registrar entrada
+          </Button>
+        )}
+      </div>
+
+      <ResponsiveTable>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Producto</TableHead>
+              <TableHead>Cantidad</TableHead>
+              <TableHead>Motivo</TableHead>
+              <TableHead>Fecha</TableHead>
+              <TableHead>Registrado por</TableHead>
+              <TableHead>Observación</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {isLoading &&
+              Array.from({ length: 5 }).map((_, i) => (
+                <TableRow key={`skel-${i}`}>
+                  {Array.from({ length: 6 }).map((__, j) => (
+                    <TableCell key={j}><Skeleton className="h-4 w-20" /></TableCell>
+                  ))}
+                </TableRow>
+              ))}
+
+            {empty && (
+              <TableRow>
+                <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
+                  Aún no hay entradas registradas.
+                </TableCell>
+              </TableRow>
+            )}
+
+            {data?.items.map((e) => (
+              <TableRow key={e.id}>
+                <TableCell className="font-medium">{e.productoNombre}</TableCell>
+                <TableCell>
+                  {e.cantidad} {e.unidadMedida}
+                </TableCell>
+                <TableCell>
+                  <Badge variant="outline">
+                    {ENTRY_REASON_LABELS[e.motivoEntrada as EntryReason] ?? e.motivoEntrada}
+                  </Badge>
+                </TableCell>
+                <TableCell className="text-muted-foreground">
+                  {new Date(e.fechaEntrada).toLocaleDateString("es-CO")}
+                </TableCell>
+                <TableCell className="text-muted-foreground">{e.usuarioNombre}</TableCell>
+                <TableCell className="text-muted-foreground text-xs max-w-xs truncate">
+                  {e.observacion ?? "—"}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </ResponsiveTable>
+
+      {data && data.totalCount > 0 && (
+        <div className="mt-4 flex items-center justify-between text-sm text-muted-foreground">
+          <span>Página {data.page} de {totalPages} · {data.totalCount} entradas</span>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}>
+              Anterior
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages}>
+              Siguiente
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────
+// Sheet: registrar entrada
+// ────────────────────────────────────────────────────────────
+function RegisterEntrySheet({
+  open,
+  defaultProduct,
+  onClose,
+}: {
+  open: boolean;
+  defaultProduct?: Product;
+  onClose: () => void;
+}) {
+  const register = useRegisterEntry();
+
+  // Estado inicial por render: el padre remonta este componente (key) en cada apertura.
+  const [product, setProduct] = useState<Product | null>(defaultProduct ?? null);
+  const [cantidad, setCantidad] = useState<number>(0);
+  const [motivo, setMotivo] = useState<EntryReason>("Compra");
+  const [observacion, setObservacion] = useState<string>("");
+  const [fecha, setFecha] = useState<string>(() => toLocalDate(new Date()));
+  // Datos del lote: lo que pide la Secretaría de Salud para poder trazar el insumo
+  const [numeroLote, setNumeroLote] = useState<string>("");
+  const [vencimiento, setVencimiento] = useState<string>("");
+  const [proveedor, setProveedor] = useState<string>("");
+  const [factura, setFactura] = useState<string>("");
+  // Costo de compra por unidad (0 = no se registra): va en el lote, el producto muestra el último
+  const [costo, setCosto] = useState<number>(0);
+
+  // Un medicamento o un dispositivo médico sin lote ni vencimiento no se puede reportar
+  const exigeLote = product?.tipoRegulatorio === "Medicamento" || product?.tipoRegulatorio === "DispositivoMedico";
+
+  const entryDirty =
+    (product?.id ?? null) !== (defaultProduct?.id ?? null) ||
+    cantidad > 0 ||
+    motivo !== "Compra" ||
+    observacion !== "" ||
+    numeroLote !== "" ||
+    vencimiento !== "" ||
+    costo > 0;
+
+  const canSubmit = !!product && cantidad > 0 && !!fecha && (!exigeLote || (!!numeroLote && !!vencimiento));
+
+  const handleSubmit = async () => {
+    if (!product) return;
+    try {
+      await register.mutateAsync({
+        productId: product.id,
+        cantidad,
+        motivoEntrada: motivo,
+        observacion: observacion || undefined,
+        fechaEntrada: toLocalIso(new Date(`${fecha}T00:00:00`)),
+        lote: {
+          numeroLote: numeroLote || undefined,
+          fechaVencimiento: vencimiento || undefined,
+          proveedor: proveedor || undefined,
+          numeroFactura: factura || undefined,
+          costoUnitario: costo > 0 ? costo : undefined,
+        },
+      });
+      useToastStore.success(
+        "Entrada registrada",
+        `${cantidad} ${product.unidadMedida} de ${product.nombre}`,
+      );
+      onClose();
+    } catch {
+      // toast global
+    }
+  };
+
+  return (
+    <FormDialog
+      open={open}
+      onOpenChange={(o) => !o && onClose()}
+      title={<>Registrar entrada</>}
+      description={<>Aumenta el stock del producto y deja registro en el historial.</>}
+      dirty={entryDirty}
+      actions={
+        <Button onClick={handleSubmit} disabled={!canSubmit || register.isPending}>
+            {register.isPending ? "Registrando..." : "Registrar"}
+          </Button>
+      }
+    >
+        <div className="pt-1 space-y-4">
+          <ProductCombobox value={product} onChange={setProduct} />
+
+          <div className="space-y-1.5">
+            <Label>Cantidad {product && <span className="text-xs text-muted-foreground">({product.unidadMedida})</span>}</Label>
+            <Input
+              type="number"
+              min={0}
+              step="0.01"
+              value={cantidad === 0 ? "" : cantidad}
+              onChange={(e) =>
+                setCantidad(e.target.value === "" ? 0 : Number(e.target.value))
+              }
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>Motivo</Label>
+            <Select value={motivo} onValueChange={(v) => setMotivo(v as EntryReason)}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {Object.entries(ENTRY_REASON_LABELS).map(([v, l]) => (
+                  <SelectItem key={v} value={v}>{l}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>Observación</Label>
+            <textarea
+              rows={3}
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              value={observacion}
+              onChange={(e) => setObservacion(e.target.value)}
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>Fecha</Label>
+            <Input
+              type="date"
+              value={fecha}
+              onChange={(e) => setFecha(e.target.value)}
+            />
+          </div>
+
+          <fieldset className="space-y-4 rounded-xl border p-4">
+            <legend className="px-1 text-sm font-medium text-muted-foreground">
+              Lote{exigeLote ? "" : " (opcional)"}
+            </legend>
+            {exigeLote && (
+              <p className="text-xs text-muted-foreground">
+                {REGULATORY_LABELS[product!.tipoRegulatorio]}: el número de lote y el vencimiento son obligatorios para poder reportarlo.
+              </p>
+            )}
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="entry-lote">Número de lote{exigeLote && " *"}</Label>
+                <Input id="entry-lote" name="numeroLote" value={numeroLote} onChange={(e) => setNumeroLote(e.target.value)} placeholder="El de la caja" />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="entry-vence">Vencimiento{exigeLote && " *"}</Label>
+                <Input id="entry-vence" name="fechaVencimiento" type="date" value={vencimiento} onChange={(e) => setVencimiento(e.target.value)} />
+              </div>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="entry-proveedor">Proveedor</Label>
+                <Input id="entry-proveedor" name="proveedor" value={proveedor} onChange={(e) => setProveedor(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="entry-factura">Número de factura</Label>
+                <Input id="entry-factura" name="numeroFactura" value={factura} onChange={(e) => setFactura(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="entry-costo">Costo unitario</Label>
+                <CurrencyInput id="entry-costo" name="costoUnitario" value={costo} onChange={setCosto} placeholder="Lo que costó cada unidad" />
+                <p className="text-xs text-muted-foreground">
+                  {product?.ultimoCosto != null ? `Último costo: ${formatCOP(product.ultimoCosto)}` : "Opcional."}
+                </p>
+              </div>
+            </div>
+          </fieldset>
+        </div>
+
+        </FormDialog>
+  );
+}
+
+// ────────────────────────────────────────────────────────────
+// Combobox de producto con búsqueda server-side
+// ────────────────────────────────────────────────────────────
+function ProductCombobox({
+  value,
+  onChange,
+}: {
+  value: Product | null;
+  onChange: (p: Product | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const debounced = useDebounce(search, 300);
+  const { data } = useProducts(1, 20, debounced);
+
+  return (
+    <div className="space-y-1.5">
+      <Label>Producto</Label>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            role="combobox"
+            className="w-full justify-between font-normal"
+          >
+            {value ? (
+              <span>
+                {value.nombre}
+                {value.referencia && (
+                  <span className="text-muted-foreground"> ({value.referencia})</span>
+                )}
+              </span>
+            ) : (
+              <span className="text-muted-foreground">Buscar producto...</span>
+            )}
+            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-[--radix-popover-trigger-width] p-0">
+          <Command shouldFilter={false}>
+            <CommandInput
+              placeholder="Nombre o referencia..."
+              value={search}
+              onValueChange={setSearch}
+            />
+            <CommandList>
+              <CommandEmpty>Sin resultados.</CommandEmpty>
+              <CommandGroup>
+                {data?.items.map((p) => (
+                  <CommandItem
+                    key={p.id}
+                    value={p.id}
+                    onSelect={() => {
+                      onChange(p);
+                      setOpen(false);
+                    }}
+                  >
+                    <Check
+                      className={cn(
+                        "mr-2 h-4 w-4",
+                        value?.id === p.id ? "opacity-100" : "opacity-0",
+                      )}
+                    />
+                    <div className="flex flex-col">
+                      <span>{p.nombre}</span>
+                      <span className="text-xs text-muted-foreground">
+                        Stock: {p.stockActual} {p.unidadMedida}
+                      </span>
+                    </div>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────
+// Tab 3: Alertas
+// ────────────────────────────────────────────────────────────
+function AlertsTab({ onRegisterEntry }: { onRegisterEntry: (p: Product) => void }) {
+  const { data, isLoading } = useStockAlerts();
+  const { data: lotes } = useLotAlerts();
+
+  const vencidos = lotes?.filter((l) => l.estado === "Vencido") ?? [];
+  const porVencer = lotes?.filter((l) => l.estado !== "Vencido") ?? [];
+
+  if (isLoading) {
+    return (
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <Skeleton key={i} className="h-44 w-full" />
+        ))}
+      </div>
+    );
+  }
+
+  const sinStockAlerta = !data || data.length === 0;
+  if (sinStockAlerta && lotes && lotes.length === 0) {
+    return (
+      <Card>
+        <CardContent className="py-12 text-center">
+          <PackageOpen className="mx-auto h-12 w-12 text-muted-foreground mb-3" />
+          <p className="text-lg font-medium">Todo el inventario está en nivel óptimo</p>
+          <p className="text-sm text-muted-foreground mt-1">
+            No hay productos bajo el mínimo ni lotes próximos a vencer.
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {vencidos.length > 0 && <LotAlertSection titulo="Lotes vencidos" descripcion="No se pueden usar: retíralos del inventario físico." lotes={vencidos} />}
+      {porVencer.length > 0 && <LotAlertSection titulo="Lotes por vencer" descripcion="Úsalos primero: el sistema ya los saca antes que los demás." lotes={porVencer} />}
+
+      {!sinStockAlerta && (
+        <section>
+          <h2 className="mb-1 font-heading text-lg font-semibold">Stock bajo el mínimo</h2>
+          <p className="mb-3 text-sm text-muted-foreground">Conviene reponer antes de que se agoten.</p>
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {data.map((p) => (
+              <AlertCard key={p.id} product={p} onRegisterEntry={() => onRegisterEntry(p)} />
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+/** Lotes vencidos o próximos a vencer, agrupados bajo un título. */
+function LotAlertSection({ titulo, descripcion, lotes }: { titulo: string; descripcion: string; lotes: LotAlerta[] }) {
+  const { can } = usePermissions();
+  const [baja, setBaja] = useState<WriteOffTarget | null>(null);
+  return (
+    <section>
+      <h2 className="mb-1 font-heading text-lg font-semibold">{titulo}</h2>
+      <p className="mb-3 text-sm text-muted-foreground">{descripcion}</p>
+      <ul className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+        {lotes.map((lote, i) => (
+          <MotionLi key={lote.id} {...staggerProps(i)}>
+            <Card className={cn("h-full border-2", lote.estado === "Vencido" ? "border-destructive/50" : "border-sand/60")}>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base">{lote.productoNombre}</CardTitle>
+                <CardDescription>
+                  {REGULATORY_LABELS[lote.tipoRegulatorio]}
+                  {lote.registroSanitario ? " · " + lote.registroSanitario : ""}
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2 text-sm">
+                <LoteBadge estado={lote.estado} diasParaVencer={lote.diasParaVencer} />
+                <p>
+                  <span className="text-muted-foreground">Lote </span>
+                  <span className="font-medium">{lote.numeroLote ?? "sin número"}</span>
+                  {lote.fechaVencimiento && (
+                    <span className="text-muted-foreground"> · vence {formatShortDate(lote.fechaVencimiento)}</span>
+                  )}
+                </p>
+                <p className="tabular-nums">
+                  Quedan {lote.cantidadDisponible.toLocaleString("es-CO")} {lote.unidadMedida}
+                </p>
+                {lote.estado === "Vencido" && can("products.update") && (
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={() =>
+                      setBaja({
+                        productId: lote.productId,
+                        lotId: lote.id,
+                        productoNombre: lote.productoNombre,
+                        numeroLote: lote.numeroLote,
+                        cantidad: lote.cantidadDisponible,
+                        unidadMedida: lote.unidadMedida,
+                        vencido: true,
+                      })
+                    }
+                    aria-label={`Dar de baja el lote vencido de ${lote.productoNombre}`}
+                  >
+                    Dar de baja
+                  </Button>
+                )}
+              </CardContent>
+            </Card>
+          </MotionLi>
+        ))}
+      </ul>
+      {baja && <WriteOffLotDialog target={baja} onClose={() => setBaja(null)} />}
+    </section>
+  );
+}
+
+function AlertCard({
+  product,
+  onRegisterEntry,
+}: {
+  product: Product;
+  onRegisterEntry: () => void;
+}) {
+  const { can } = usePermissions();
+  const canRegister = can("inventory.entries.create");
+  const estado = product.semaforoStock as StockStatus;
+
+  const pct =
+    product.stockMinimo > 0
+      ? Math.min(100, (product.stockActual / product.stockMinimo) * 100)
+      : 0;
+
+  return (
+    <Card className={cn("border-2", estado === "Rojo" ? "border-destructive/50" : "border-sand/60")}>
+      <CardHeader className="pb-3">
+        <div className="flex items-start justify-between gap-2">
+          <CardTitle className="text-base flex items-center gap-2">
+            <AlertTriangle
+              className={cn(
+                "h-4 w-4",
+                estado === "Rojo" ? "text-destructive" : "text-sand-foreground dark:text-sand",
+              )}
+            />
+            {product.nombre}
+          </CardTitle>
+          <SemaforoBadge estado={estado} />
+        </div>
+        <CardDescription>
+          {PRODUCT_TYPE_LABELS[product.tipoProducto as ProductType] ?? product.tipoProducto}
+          {product.referencia && ` · ${product.referencia}`}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div>
+          <div className="flex justify-between text-sm mb-1">
+            <span className="text-muted-foreground">Stock actual</span>
+            <span className="font-medium">
+              {product.stockActual} / mín {product.stockMinimo} {product.unidadMedida}
+            </span>
+          </div>
+          <div className="w-full bg-secondary rounded-full h-2">
+            <div
+              className={cn(
+                "h-2 rounded-full transition-all",
+                estado === "Rojo" ? "bg-destructive" : "bg-sand",
+              )}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+        </div>
+        {canRegister && (
+          <Button onClick={onRegisterEntry} size="sm" className="w-full">
+            <Plus className="mr-1 h-4 w-4" />
+            Registrar entrada
+          </Button>
+        )}
+      </CardContent>
+    </Card>
+  );
+}

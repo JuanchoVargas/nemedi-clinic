@@ -1,0 +1,119 @@
+# NemediClinic — despliegue de producción
+#   docker compose --env-file .env up -d --build   (desde deploy/)
+#
+#   caddy  :80/:443 → /api/* → api:8080 · resto → web:80
+#   api    ASP.NET Core (aplica migraciones al arrancar; imágenes en el volumen uploads_data)
+#   web    Vite build servido por nginx
+#   mssql  SQL Server 2022 con volumen persistente y backups en ./backups
+name: nemedi-clinic
+
+services:
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?Define MSSQL_SA_PASSWORD en deploy/.env}
+      MSSQL_PID: ${MSSQL_PID:-Express}
+    volumes:
+      - mssql_data:/var/opt/mssql
+      - ./backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -b -Q 'SELECT 1' >/dev/null"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ../apps/api
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_HTTP_PORTS: "8080"
+      # En Docker el API aplica las migraciones al arrancar (en IIS no: allí se aplica un script idempotente antes de publicar)
+      Database__MigrateOnStartup: "true"
+      # Zona de la clínica: el API trabaja en ella sin importar la del contenedor
+      Clock__TimeZone: ${Clock__TimeZone:-America/Bogota}
+      # Solo para que los logs del contenedor salgan en hora de Bogotá; el sistema no depende de TZ
+      TZ: America/Bogota
+      ConnectionStrings__DefaultConnection: ${ConnectionStrings__DefaultConnection:?Define ConnectionStrings__DefaultConnection en deploy/.env}
+      Jwt__Secret: ${Jwt__Secret:?Define Jwt__Secret en deploy/.env}
+      Jwt__ExpirationMinutes: ${Jwt__ExpirationMinutes:-60}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      # Primer administrador de plataforma (solo se crea si la tabla PlatformAdmins está vacía)
+      Platform__AdminEmail: ${Platform__AdminEmail:?Define Platform__AdminEmail en deploy/.env}
+      Platform__AdminPassword: ${Platform__AdminPassword:?Define Platform__AdminPassword en deploy/.env}
+      Storage__UploadsPath: /data/uploads
+      # Solo de Caddy (IP fija en la red del compose, ver "caddy" y "networks") se acepta X-Forwarded-*
+      # (IP del cliente para los límites de intentos, Host del canal para el branding). Sin esto el API
+      # ignora esas cabeceras. Ningún otro contenedor de la red puede fingir la IP del cliente.
+      ForwardedHeaders__KnownProxies__0: ${CADDY_IP:-172.30.250.10}
+      # Correo opcional: sin Smtp__Host no se envía nada
+      Smtp__Host: ${Smtp__Host:-}
+      Smtp__Port: ${Smtp__Port:-587}
+      Smtp__User: ${Smtp__User:-}
+      Smtp__Password: ${Smtp__Password:-}
+      Smtp__From: ${Smtp__From:-}
+      Smtp__EnableSsl: ${Smtp__EnableSsl:-true}
+    volumes:
+      # Fotos de pacientes, productos y procedimientos. Inclúyelo en los backups (ver README).
+      - uploads_data:/data/uploads
+    depends_on:
+      mssql:
+        condition: service_healthy
+    healthcheck:
+      # La imagen aspnet no trae curl; se usa bash con /dev/tcp
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /api/health HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && grep -q ' 200 ' <&3"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../apps/web
+      args:
+        # "/" = mismo origen. Cada dominio de canal llama a SU /api y el API resuelve la marca por Host.
+        VITE_API_URL: /
+        VITE_APP_NAME: ${APP_NAME:-NemediClinic}
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:?Define DOMAIN en deploy/.env}
+    networks:
+      default:
+        # IP fija: es la única que el API acepta como proxy (ForwardedHeaders__KnownProxies)
+        ipv4_address: ${CADDY_IP:-172.30.250.10}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+      - api
+    restart: unless-stopped
+
+volumes:
+  mssql_data:
+  uploads_data:
+  caddy_data:
+  caddy_config:
+
+# Red del compose con subred fija, para que Caddy tenga una IP fija (CADDY_IP) que el API declara como proxy.
+# Si choca con una red del servidor, cambia COMPOSE_SUBNET y CADDY_IP (dentro de ella) en deploy/.env y
+# recrea la red: docker compose down && docker compose --env-file .env up -d.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${COMPOSE_SUBNET:-172.30.250.0/24}

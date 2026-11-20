@@ -1,0 +1,19 @@
+{
+  "name": "nemedi-clinic",
+  "private": true,
+  "description": "Raíz del monorepo: pruebas unitarias del API y pruebas end-to-end con Playwright. Cada app se construye sola (apps/api, apps/web).",
+  "scripts": {
+    "test": "pnpm test:unit && playwright test --project=api",
+    "test:report": "playwright show-report",
+    "test:ui": "playwright test --project=admin",
+    "test:all": "playwright test",
+    "test:mobile": "playwright test --project=mobile",
+    "test:factus": "playwright test --project=factus",
+    "test:wizard": "playwright test --project=wizard",
+    "test:unit": "dotnet test apps/api/tests/NemediClinic.Tests --nologo --artifacts-path .artifacts/api-tests"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.0",
+    "@types/node": "^24.0.0"
+  }
+}

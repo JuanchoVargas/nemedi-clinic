@@ -1,0 +1,43 @@
+{
+ "_comentario": "Equivalencias entre los datos de NemediClinic y los códigos DIAN de factus-catalogs.json. Es una decisión de negocio (no viene de Factus): el script de catálogos no toca este archivo. Cada código debe existir en su tabla de factus-catalogs.json; FactusCatalogService lo verifica al cargar.",
+ "tipoDocumento": {
+  "CC": "13",
+  "CE": "22",
+  "CD": "42",
+  "PA": "41",
+  "SC": "42",
+  "PE": "47",
+  "PT": "48",
+  "RC": "11",
+  "TI": "12",
+  "CN": "11",
+  "DE": "42",
+  "NIT": "31"
+ },
+ "_tipoDocumentoSinEquivalencia": "AS, MS y SI (sin identificación) se facturan como consumidor final.",
+ "metodoPago": {
+  "Efectivo": "10",
+  "Transferencia": "47",
+  "Tarjeta": "48",
+  "Otro": "ZZZ"
+ },
+ "consumidorFinal": {
+  "tipoDocumento": "13",
+  "documento": "222222222222",
+  "nombre": "Consumidor final"
+ },
+ "porDefecto": {
+  "unidadMedida": "94",
+  "codigoEstandar": "999",
+  "impuestoIva": "01",
+  "tributoCliente": "ZZ",
+  "responsabilidad": "R-99-PN",
+  "personaNatural": "2",
+  "personaJuridica": "1",
+  "formaPagoContado": "1",
+  "formaPagoCredito": "2",
+  "correccionAnulacion": "2",
+  "correccionDevolucion": "1",
+  "pais": "CO"
+ }
+}

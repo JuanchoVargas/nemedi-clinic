@@ -1,0 +1,127 @@
+// ============================================================
+// appointment.ts — Tipos del dominio Citas
+//
+// Backend: AppointmentsController.cs + DTOs/Appointments/*.cs
+// ASP.NET serializa el enum AppointmentStatus como string.
+// ============================================================
+
+export const AppointmentStatus = {
+  Agendada: "Agendada",
+  Confirmada: "Confirmada",
+  EnCurso: "EnCurso",
+  Completada: "Completada",
+  Cancelada: "Cancelada",
+  NoConfirmo: "NoConfirmo",
+} as const;
+
+export type AppointmentStatus =
+  (typeof AppointmentStatus)[keyof typeof AppointmentStatus];
+
+/**
+ * Clase CSS por estado para los eventos de FullCalendar. Los colores viven en
+ * src/styles/tokens.css (.fc .appt-*), derivados de los tokens: así siguen el tema
+ * claro/oscuro y la marca del canal. No poner colores hex aquí.
+ */
+export const APPOINTMENT_CLASS: Record<AppointmentStatus, string> = {
+  Agendada: "appt-agendada", // primario
+  Confirmada: "appt-confirmada", // éxito
+  EnCurso: "appt-en-curso", // arena
+  Completada: "appt-completada", // neutro
+  Cancelada: "appt-cancelada", // destructivo, tachado
+  NoConfirmo: "appt-no-confirmo", // arena tenue
+};
+
+/**
+ * Etiqueta humana del estado para mostrar en UI.
+ */
+export const APPOINTMENT_LABELS: Record<AppointmentStatus, string> = {
+  Agendada: "Agendada",
+  Confirmada: "Confirmada",
+  EnCurso: "En curso",
+  Completada: "Completada",
+  Cancelada: "Cancelada",
+  NoConfirmo: "No confirmó",
+};
+
+export interface AppointmentDto {
+  id: string;
+  patientId: string;
+  patientNombre: string;
+  esteticistId: string;
+  esteticistNombre: string;
+  procedureId: string;
+  procedureNombre: string;
+  patientPackageSessionId?: string | null;
+  branchId: string;
+  fechaInicio: string; // ISO
+  fechaFin: string; // ISO
+  estado: string; // AppointmentStatus serializado
+  notas?: string | null;
+  /** Por qué se canceló (obligatorio al cancelar). */
+  motivoCancelacion?: string | null;
+  whatsAppReminderSent: boolean;
+  whatsAppConfirmedAt?: string | null;
+}
+
+export interface CreateAppointmentRequest {
+  patientId: string;
+  esteticistId: string;
+  procedureId: string;
+  branchId: string;
+  fechaInicio: string; // ISO
+  patientPackageSessionId?: string | null;
+  notas?: string;
+}
+
+export interface UpdateAppointmentStatusRequest {
+  estado: AppointmentStatus;
+  notas?: string;
+  /** Obligatorio al pasar a Cancelada. */
+  motivo?: string;
+}
+
+/** PUT /appointments/{id}/reschedule: conserva la duración salvo que llegue fechaFin (estirar en el calendario). */
+export interface RescheduleAppointmentRequest {
+  fechaInicio: string;
+  fechaFin?: string;
+  esteticistId?: string;
+}
+
+/** Solo una cita agendada o confirmada se puede mover. */
+export function canReschedule(estado: string): boolean {
+  return estado === AppointmentStatus.Agendada || estado === AppointmentStatus.Confirmada;
+}
+
+/**
+ * Forma compatible con FullCalendar (event-object).
+ * El frontend lo arma a partir de AppointmentDto.
+ */
+export interface CalendarEventDto {
+  id: string;
+  title: string;
+  start: string;
+  end: string;
+  classNames: string[];
+  editable?: boolean;
+  extendedProps: Record<string, unknown>;
+}
+
+export function appointmentToCalendarEvent(a: AppointmentDto, movable = false): CalendarEventDto {
+  const estado = a.estado as AppointmentStatus;
+  return {
+    id: a.id,
+    // Arrastrable solo si quien mira puede moverla y la cita sigue agendada o confirmada
+    editable: movable && canReschedule(a.estado),
+    title: `${a.patientNombre} · ${a.procedureNombre}`,
+    start: a.fechaInicio,
+    end: a.fechaFin,
+    classNames: [APPOINTMENT_CLASS[estado] ?? "appt-completada"],
+    extendedProps: {
+      estado: a.estado,
+      esteticistNombre: a.esteticistNombre,
+      patientId: a.patientId,
+      notas: a.notas,
+      raw: a,
+    },
+  };
+}

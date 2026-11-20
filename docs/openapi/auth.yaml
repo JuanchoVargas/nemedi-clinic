@@ -1,0 +1,257 @@
+openapi: 3.1.0
+info:
+  title: NemediClinic Auth API
+  version: 1.0.0
+  description: Endpoints de autenticación para NemediClinic
+
+servers:
+  - url: http://localhost:5055
+    description: Desarrollo local
+
+paths:
+  /api/v1/auth/login:
+    post:
+      summary: Iniciar sesión
+      operationId: login
+      tags:
+        - Auth
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login exitoso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          description: Correo vacío, inválido o de más de 254 caracteres
+        '401':
+          description: Credenciales inválidas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: >-
+            Demasiados intentos: desde esta IP (cupo por minuto), con esta cuenta desde esta IP
+            (10 claves equivocadas en 15 min) o con esta cuenta desde cualquier IP donde no haya entrado
+            bien en los últimos 30 días (100 en una hora). Trae la cabecera Retry-After en segundos.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/auth/register:
+    post:
+      summary: Crear un usuario en la clínica del JWT (exige sesión de dueño o recepción)
+      description: >-
+        Nunca anónimo. El dueño (SuperAdmin) crea cualquier rol; recepción (Admin) solo Esteticista.
+        El tenant sale del JWT. El correo no puede existir en ninguna clínica ni en la plataforma.
+        Con la clave temporal pendiente (claim pwd_change) responde 403 password_change_required.
+      operationId: register
+      tags:
+        - Auth
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Usuario creado (debe cambiar la clave en su primer ingreso)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserInfo'
+        '400':
+          description: Datos inválidos, rol inexistente, sede ajena o clave que no cumple la política
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Sin sesión, o la cuenta del JWT ya no está activa o cambió de rol
+        '403':
+          description: >-
+            Rol sin permiso (esteticista), recepción creando un rol distinto de Esteticista, o clave
+            temporal pendiente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: El correo ya está en uso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/auth/refresh:
+    post:
+      summary: Renovar access token usando refresh token
+      operationId: refreshToken
+      tags:
+        - Auth
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: Token renovado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          description: Refresh token inválido o expirado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  schemas:
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+          example: admin@clinica-demo.example.com
+        password:
+          type: string
+          format: password
+          example: S3cur3P@ss!
+
+    RegisterRequest:
+      type: object
+      required:
+        - nombre
+        - apellido
+        - email
+        - password
+        - rol
+      properties:
+        nombre:
+          type: string
+          example: Laura
+        apellido:
+          type: string
+          example: Pérez
+        email:
+          type: string
+          format: email
+          example: laura.perez@clinica-nueva.example.com
+        password:
+          type: string
+          format: password
+          minLength: 8
+          description: Al menos una letra y un dígito (PasswordPolicy)
+        rol:
+          type: string
+          enum:
+            - SuperAdmin
+            - Admin
+            - Esteticista
+        branchId:
+          type: string
+          format: uuid
+          description: Sede de la misma clínica (opcional)
+
+    RefreshRequest:
+      type: object
+      required:
+        - refreshToken
+      properties:
+        refreshToken:
+          type: string
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+
+    AuthResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          properties:
+            accessToken:
+              type: string
+              example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+            refreshToken:
+              type: string
+              example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+            expiresIn:
+              type: integer
+              description: Segundos hasta que expire el access token
+              example: 3600
+            user:
+              $ref: '#/components/schemas/UserInfo'
+        message:
+          type: string
+          example: Login exitoso
+        errors:
+          type: array
+          items:
+            type: string
+          example: []
+
+    UserInfo:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        fullName:
+          type: string
+        role:
+          type: string
+          enum:
+            - SuperAdmin
+            - Admin
+            - Esteticista
+        tenantId:
+          type: string
+          format: uuid
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        data:
+          type: 'null'
+        message:
+          type: string
+          example: Credenciales inválidas
+        errors:
+          type: array
+          items:
+            type: string
+          example:
+            - El email o la contraseña son incorrectos
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

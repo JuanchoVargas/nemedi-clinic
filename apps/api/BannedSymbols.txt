@@ -1,0 +1,36 @@
+# APIs prohibidas en todo el backend (Microsoft.CodeAnalysis.BannedApiAnalyzers, regla RS0030,
+# que Directory.Build.props convierte en error de compilación).
+#
+# La hora del sistema es la de la clínica (IClock, Clock:TimeZone = Bogotá por defecto), nunca la
+# del servidor: producción corre en un IIS en US Eastern con horario de verano. Cualquier API que
+# lea la hora o la zona local del servidor queda prohibida.
+P:System.DateTime.Now;Usa IClock.Now (hora de la clínica). DateTime.Now es la hora del servidor.
+P:System.DateTime.Today;Usa IClock.Today (fecha de la clínica).
+P:System.DateTime.UtcNow;Usa IClock.UtcNow (inyectado, se puede fijar en las pruebas).
+P:System.DateTimeOffset.Now;Usa IClock.Now o IClock.UtcNow.
+P:System.DateTimeOffset.UtcNow;Usa IClock.UtcNow.
+P:System.TimeZoneInfo.Local;La zona del servidor no importa: usa IClock.TimeZone.
+M:System.DateTime.ToLocalTime;Usa IClock.ToLocal: ToLocalTime convierte a la zona del servidor.
+M:System.DateTime.ToUniversalTime;Usa IClock.ToUtc: ToUniversalTime asume la zona del servidor.
+M:System.DateTimeOffset.ToLocalTime;Usa IClock.ToLocal.
+P:System.DateTimeOffset.LocalDateTime;Usa IClock.ToLocal.
+
+# Imágenes: solo se decodifican JPEG, PNG y WebP, con ImageDecoding (una Configuration con esos tres
+# módulos). Las cargas de ImageSharp sin DecoderOptions usan Configuration.Default, que trae TIFF, BMP,
+# GIF y demás (ImageSharp 3.1.12 tiene avisos de seguridad abiertos; ver ImageDecoding.cs).
+M:SixLabors.ImageSharp.Image.Load(System.String);Usa ImageDecoding (solo JPEG, PNG y WebP).
+M:SixLabors.ImageSharp.Image.Load(System.IO.Stream);Usa ImageDecoding.Load o ImageDecoding.LoadAsync.
+M:SixLabors.ImageSharp.Image.Load(System.ReadOnlySpan{System.Byte});Usa ImageDecoding.Load.
+M:SixLabors.ImageSharp.Image.Load``1(System.String);Usa ImageDecoding.
+M:SixLabors.ImageSharp.Image.Load``1(System.IO.Stream);Usa ImageDecoding.
+M:SixLabors.ImageSharp.Image.Load``1(System.ReadOnlySpan{System.Byte});Usa ImageDecoding.
+M:SixLabors.ImageSharp.Image.LoadAsync(System.String,System.Threading.CancellationToken);Usa ImageDecoding.LoadAsync.
+M:SixLabors.ImageSharp.Image.LoadAsync(System.IO.Stream,System.Threading.CancellationToken);Usa ImageDecoding.LoadAsync.
+M:SixLabors.ImageSharp.Image.LoadAsync``1(System.String,System.Threading.CancellationToken);Usa ImageDecoding.LoadAsync.
+M:SixLabors.ImageSharp.Image.LoadAsync``1(System.IO.Stream,System.Threading.CancellationToken);Usa ImageDecoding.LoadAsync.
+M:SixLabors.ImageSharp.Image.Identify(System.String);Identifica con ImageDecoding.Options.
+M:SixLabors.ImageSharp.Image.Identify(System.IO.Stream);Identifica con ImageDecoding.Options.
+M:SixLabors.ImageSharp.Image.Identify(System.ReadOnlySpan{System.Byte});Identifica con ImageDecoding.Options.
+M:SixLabors.ImageSharp.Image.IdentifyAsync(System.String,System.Threading.CancellationToken);Identifica con ImageDecoding.Options.
+M:SixLabors.ImageSharp.Image.IdentifyAsync(System.IO.Stream,System.Threading.CancellationToken);Identifica con ImageDecoding.Options.
+T:SixLabors.ImageSharp.Processing.HistogramEqualizationExtensions;GHSA-j3p4-wp97-rph4 (ImageSharp 3.1.12): no se usa.

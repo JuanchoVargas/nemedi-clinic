@@ -1,0 +1,64 @@
+# Dependencies
+node_modules/
+vendor/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Build output
+dist/
+build/
+.next/
+out/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Coverage
+coverage/
+
+# Temp
+tmp/
+.tmp/
+
+# .NET build output
+bin/
+obj/
+
+# Playwright (tests e2e raíz)
+test-results/
+playwright-report/
+
+# Resultados del recorrido de UI (se regeneran en cada corrida)
+tests/e2e/ui/.results/
+
+# Capturas del recorrido de UI y de las pruebas móviles (pnpm test:ui, pnpm test:mobile)
+docs/manual/
+
+# Despliegue
+deploy/.env
+deploy/backups/
+
+# Imágenes subidas en desarrollo (LocalFileStorage)
+apps/api/src/NemediClinic.Api/App_Data/
+
+# Scripts puntuales de verificación (no se commitean)
+*.tmp.mjs
+
+# Build aparte de las pruebas unitarias (pnpm test:unit): no choca con un API corriendo
+.artifacts/

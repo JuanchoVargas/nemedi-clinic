@@ -2,7 +2,7 @@
 
 Este documento describe cómo está construido NemediClinic: sus capas, el modelo de datos a alto
 nivel, el aislamiento entre clínicas y las decisiones de seguridad. Todo lo que aquí se afirma
-está implementado en el código fuente (privado).
+está implementado en el código de este repositorio.
 
 ## Vista general
 
@@ -97,7 +97,7 @@ Cada clínica es un tenant. El aislamiento se aplica en tres puntos:
 Una prueba de extremo a extremo (Playwright, proyecto `api`) crea dos clínicas con datos y comprueba
 en ambas direcciones que ninguna lista, lee ni modifica datos de la otra, que el dueño de una
 clínica no entra a las rutas de plataforma y que el administrador de plataforma no entra a los
-datos clínicos. Un hook de `git push` ejecuta las pruebas unitarias y las pruebas de API.
+datos clínicos. `pnpm test` ejecuta las pruebas unitarias y las pruebas de API.
 
 ## Seguridad y privacidad
 
@@ -110,6 +110,10 @@ datos clínicos. Un hook de `git push` ejecuta las pruebas unitarias y las prueb
 - Un usuario con contraseña temporal solo puede usar las rutas de autenticación hasta cambiarla:
   lo exige un middleware, no solo la interfaz. Las contraseñas temporales se entregan una sola vez.
 - Cambiar o restablecer una contraseña invalida los refresh tokens vigentes.
+- Límite de intentos: el inicio de sesión, la renovación y el cambio de clave comparten un cupo por
+  IP; las claves equivocadas del inicio de sesión y del cambio de clave se cuentan además por cuenta,
+  con una cookie de dispositivo conocido para que un ataque no deje por fuera al dueño (detalle en el
+  README).
 - Una clínica suspendida por mora queda en solo lectura: un middleware rechaza las escrituras.
 
 ### Archivos clínicos
@@ -143,5 +147,5 @@ en desarrollo.
 
 ### Pendiente
 
-- Planeado: controles de abuso del inicio de sesión y auditoría de accesos.
+- Planeado: auditoría de accesos.
 - En desarrollo: facturación electrónica, que no se ha validado de extremo a extremo.
